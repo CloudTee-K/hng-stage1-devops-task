@@ -1,201 +1,102 @@
 #!/bin/bash
-# HNG Stage 1 DevOps Task - Automated Deployment Script
+# ============================================
+# HNG Stage 1 DevOps Automated Deployment Script
 # Author: CloudTee-K
-# Version: 1.0
+# ============================================
 
-set -euo pipefail
+set -e
+trap 'echo "‚ùå Error occurred on line $LINENO"; exit 1' ERR
+
 LOG_FILE="deployment.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "=== Starting Automated Deployment ($(date)) ===" | tee -a "$LOG_FILE"
+echo "Ì∫Ä Starting automated deployment..."
 
-# ---------- CONFIGURATION ----------
-SSH_USER="ubuntu"
-SSH_HOST="127.0.0.1"
-SSH_PORT=22
-REPO_URL="https://github.com/CloudTee-K/hng-stage1-devops-task.git"
-APP_NAME="simple-web-app"
-CONTAINER_NAME="hng_stage1_container"
-DOCKER_IMAGE="simple-web-app:latest"
-NGINX_CONF="/etc/nginx/sites-available/${APP_NAME}"
+# ====== 1Ô∏è‚É£ USER INPUTS ======
+read -p "Enter your GitHub repository URL: " REPO_URL
+read -p "Enter your GitHub Personal Access Token (PAT): " PAT
+read -p "Enter SSH username: " SSH_USER
+read -p "Enter SSH host/IP: " SSH_HOST
+read -p "Enter port number for the app (e.g., 5000): " APP_PORT
 
-# ---------- HELPER FUNCTIONS ----------
-log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-}
+# Validate inputs
+if [[ -z "$REPO_URL" || -z "$PAT" || -z "$SSH_USER" || -z "$SSH_HOST" || -z "$APP_PORT" ]]; then
+  echo "‚ùå One or more inputs are empty. Exiting..."
+  exit 1
+fi
 
-cleanup() {
-  log "Ì∑π Cleaning up previous deployments..."
-  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
+# ====== 2Ô∏è‚É£ CLONE REPO ======
+APP_DIR="hng_app"
+if [ -d "$APP_DIR" ]; then
+  echo "Ì∑π Removing existing repo directory..."
+  rm -rf "$APP_DIR"
+fi
 
-# ---------- VALIDATION ----------
-log "Ì¥ç Checking prerequisites..."
-if ! command -v docker >/dev/null 2>&1; then
-  log "Docker not installed. Installing..."
-  sudo apt-get update -y && sudo apt-get install -y docker.io
-  sudo systemctl start docker
+echo "Ì≥• Cloning repository..."
+git clone "https://${PAT}@${REPO_URL#https://}" "$APP_DIR"
+cd "$APP_DIR"
+
+# ====== 3Ô∏è‚É£ SSH CONNECTIVITY ======
+echo "Ì¥ó Checking SSH connectivity..."
+if ssh -o BatchMode=yes -o ConnectTimeout=5 "$SSH_USER@$SSH_HOST" "echo SSH connected"; then
+  echo "‚úÖ SSH connection successful."
+else
+  echo "‚ùå SSH connection failed."
+  exit 1
+fi
+
+# ====== 4Ô∏è‚É£ SERVER PREPARATION ======
+echo "‚öôÔ∏è  Preparing server environment..."
+ssh "$SSH_USER@$SSH_HOST" <<EOF
+  set -e
+  sudo apt-get update -y
+  sudo apt-get install -y docker.io nginx
+  sudo usermod -aG docker \$USER
   sudo systemctl enable docker
-else
-  log "‚úÖ Docker is installed: $(docker --version)"
-fi
+  sudo systemctl start docker
+  sudo systemctl restart nginx
+EOF
 
-if ! command -v nginx >/dev/null 2>&1; then
-  log "Installing Nginx..."
-  sudo apt-get install -y nginx
-  sudo systemctl start nginx
-  sudo systemctl enable nginx
-else
-  log "‚úÖ Nginx is installed."
-fi
+# ====== 5Ô∏è‚É£ DEPLOY DOCKER APP ======
+echo "Ì∞≥ Deploying Docker container..."
+scp -r . "$SSH_USER@$SSH_HOST:/home/$SSH_USER/app"
+ssh "$SSH_USER@$SSH_HOST" <<EOF
+  cd /home/$SSH_USER/app
+  sudo docker build -t hng_stage1_app .
+  sudo docker stop hng_stage1_app || true
+  sudo docker rm hng_stage1_app || true
+  sudo docker run -d -p ${APP_PORT}:5000 --name hng_stage1_app hng_stage1_app
+EOF
 
-# ---------- GIT OPERATIONS ----------
-log "Ì≥¶ Cloning repository..."
-rm -rf app || true
-git clone "$REPO_URL" app || { log "‚ùå Failed to clone repo."; exit 1; }
-cd app
-
-# ---------- DOCKER BUILD ----------
-log "‚öôÔ∏è Building Docker image..."
-docker build -t "$DOCKER_IMAGE" . | tee -a "$LOG_FILE"
-
-# ---------- RUN CONTAINER ----------
-log "Ì∫Ä Running Docker container..."
-docker run -d -p 80:5000 --name "$CONTAINER_NAME" "$DOCKER_IMAGE"
-
-# ---------- NGINX CONFIGURATION ----------
-log "Ì∑© Configuring Nginx reverse proxy..."
-sudo bash -c "cat > $NGINX_CONF" <<EOF
+# ====== 6Ô∏è‚É£ NGINX CONFIGURATION ======
+echo "Ì∑© Configuring Nginx reverse proxy..."
+ssh "$SSH_USER@$SSH_HOST" <<EOF
+  sudo bash -c 'cat > /etc/nginx/sites-available/hng_stage1 <<EOL
 server {
     listen 80;
-    server_name _;
     location / {
-        proxy_pass http://127.0.0.1:5000;
+        proxy_pass http://127.0.0.1:${APP_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
     }
 }
+EOL'
+  sudo ln -sf /etc/nginx/sites-available/hng_stage1 /etc/nginx/sites-enabled/
+  sudo nginx -t && sudo systemctl reload nginx
 EOF
 
-sudo ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-log "‚úÖ Nginx configured and reloaded."
-
-# ---------- DEPLOYMENT VALIDATION ----------
-log "Ì∑† Validating deployment..."
-if docker ps | grep -q "$CONTAINER_NAME"; then
-  log "‚úÖ Container '$CONTAINER_NAME' is running."
-else
-  log "‚ùå Container failed to start."
-  exit 1
-fi
-
-if curl -s http://127.0.0.1 | grep -qi "html"; then
-  log "‚úÖ App responded successfully on port 80."
-else
-  log "‚ö†Ô∏è App may not be responding correctly."
-fi
-
-log "ÌæØ Deployment successful!"
-echo "‚úÖ Deployment complete! Visit http://localhost" | tee -a "$LOG_FILE"
-#!/bin/bash
-# HNG Stage 1 DevOps Task - Automated Deployment Script
-# Author: CloudTee-K
-# Version: 1.0
-
-set -euo pipefail
-LOG_FILE="deployment.log"
-
-echo "=== Starting Automated Deployment ($(date)) ===" | tee -a "$LOG_FILE"
-
-# ---------- CONFIGURATION ----------
-SSH_USER="ubuntu"
-SSH_HOST="127.0.0.1"
-SSH_PORT=22
-REPO_URL="https://github.com/CloudTee-K/hng-stage1-devops-task.git"
-APP_NAME="simple-web-app"
-CONTAINER_NAME="hng_stage1_container"
-DOCKER_IMAGE="simple-web-app:latest"
-NGINX_CONF="/etc/nginx/sites-available/${APP_NAME}"
-
-# ---------- HELPER FUNCTIONS ----------
-log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-}
-
-cleanup() {
-  log "Ì∑π Cleaning up previous deployments..."
-  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
-# ---------- VALIDATION ----------
-log "Ì¥ç Checking prerequisites..."
-if ! command -v docker >/dev/null 2>&1; then
-  log "Docker not installed. Installing..."
-  sudo apt-get update -y && sudo apt-get install -y docker.io
-  sudo systemctl start docker
-  sudo systemctl enable docker
-else
-  log "‚úÖ Docker is installed: $(docker --version)"
-fi
-
-if ! command -v nginx >/dev/null 2>&1; then
-  log "Installing Nginx..."
-  sudo apt-get install -y nginx
-  sudo systemctl start nginx
-  sudo systemctl enable nginx
-else
-  log "‚úÖ Nginx is installed."
-fi
-
-# ---------- GIT OPERATIONS ----------
-log "Ì≥¶ Cloning repository..."
-rm -rf app || true
-git clone "$REPO_URL" app || { log "‚ùå Failed to clone repo."; exit 1; }
-cd app
-
-# ---------- DOCKER BUILD ----------
-log "‚öôÔ∏è Building Docker image..."
-docker build -t "$DOCKER_IMAGE" . | tee -a "$LOG_FILE"
-
-# ---------- RUN CONTAINER ----------
-log "Ì∫Ä Running Docker container..."
-docker run -d -p 80:5000 --name "$CONTAINER_NAME" "$DOCKER_IMAGE"
-
-# ---------- NGINX CONFIGURATION ----------
-log "Ì∑© Configuring Nginx reverse proxy..."
-sudo bash -c "cat > $NGINX_CONF" <<EOF
-server {
-    listen 80;
-    server_name _;
-    location / {
-        proxy_pass http://127.0.0.1:5000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-}
+# ====== 7Ô∏è‚É£ VALIDATION ======
+echo "Ì¥ç Validating deployment..."
+ssh "$SSH_USER@$SSH_HOST" <<EOF
+  sudo docker ps | grep hng_stage1_app && echo "‚úÖ Docker container running."
+  sudo systemctl status nginx | grep active && echo "‚úÖ Nginx active."
 EOF
 
-sudo ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-log "‚úÖ Nginx configured and reloaded."
+# ====== 8Ô∏è‚É£ CLEANUP ======
+echo "Ì∑Ω Cleaning up temporary files..."
+cd ..
+rm -rf "$APP_DIR"
 
-# ---------- DEPLOYMENT VALIDATION ----------
-log "Ì∑† Validating deployment..."
-if docker ps | grep -q "$CONTAINER_NAME"; then
-  log "‚úÖ Container '$CONTAINER_NAME' is running."
-else
-  log "‚ùå Container failed to start."
-  exit 1
-fi
-
-if curl -s http://127.0.0.1 | grep -qi "html"; then
-  log "‚úÖ App responded successfully on port 80."
-else
-  log "‚ö†Ô∏è App may not be responding correctly."
-fi
-
-log "ÌæØ Deployment successful!"
-echo "‚úÖ Deployment complete! Visit http://localhost" | tee -a "$LOG_FILE"
+echo "Ìæâ DEPLOYMENT SUCCESSFUL!"
+echo "Logs saved in: $LOG_FILE"
 
