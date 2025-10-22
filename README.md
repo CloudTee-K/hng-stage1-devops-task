@@ -52,9 +52,20 @@ Testing the Application
 
 Once the container is up and running, open your browser and go to:
 
-👉 http://localhost:5000
+ http://localhost:5000
 
 You should see a success message or your Flask app’s homepage.
+
+
+Screenshots
+
+(Add your screenshots here after successful deployment)
+
+Example:
+/screenshots
+ ├── app_running.png
+ ├── docker_build.png
+ └── terminal_output.png
 
 
 Author
