@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -e
+
+echo "Ì∫Ä Starting automated deployment..."
+
+# Step 1: Build Docker image
+echo "Ìª†Ô∏è Building Docker image..."
+docker build -t simple-web-app .
+
+# Step 2: Remove old container if it exists
+if [ "$(docker ps -aq -f name=hng_stage1_container)" ]; then
+  echo "Ì∑π Removing old container..."
+  docker rm -f hng_stage1_container
+fi
+
+# Step 3: Run container
+echo "ÌøÉ Running container on port 80..."
+docker run -d -p 80:5000 --name hng_stage1_container simple-web-app
+
+echo "‚úÖ Deployment complete! Visit http://localhost"
+
